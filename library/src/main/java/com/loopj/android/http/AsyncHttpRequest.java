@@ -1,13 +1,13 @@
 /*
     Android Asynchronous Http Client
     Copyright (c) 2011 James Smith <james@loopj.com>
-    http://loopj.com
+    https://loopj.com
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
 
-        http://www.apache.org/licenses/LICENSE-2.0
+        https://www.apache.org/licenses/LICENSE-2.0
 
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,17 +18,16 @@
 
 package com.loopj.android.http;
 
-import android.util.Log;
-
-import org.apache.http.HttpResponse;
-import org.apache.http.client.HttpRequestRetryHandler;
-import org.apache.http.client.methods.HttpUriRequest;
-import org.apache.http.impl.client.AbstractHttpClient;
-import org.apache.http.protocol.HttpContext;
-
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.UnknownHostException;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import cz.msebera.android.httpclient.HttpResponse;
+import cz.msebera.android.httpclient.client.HttpRequestRetryHandler;
+import cz.msebera.android.httpclient.client.methods.HttpUriRequest;
+import cz.msebera.android.httpclient.impl.client.AbstractHttpClient;
+import cz.msebera.android.httpclient.protocol.HttpContext;
 
 /**
  * Internal class, representing the HttpRequest, done in asynchronous manner
@@ -38,24 +37,24 @@ public class AsyncHttpRequest implements Runnable {
     private final HttpContext context;
     private final HttpUriRequest request;
     private final ResponseHandlerInterface responseHandler;
+    private final AtomicBoolean isCancelled = new AtomicBoolean();
     private int executionCount;
-    private boolean isCancelled;
     private boolean cancelIsNotified;
-    private boolean isFinished;
+    private volatile boolean isFinished;
     private boolean isRequestPreProcessed;
 
     public AsyncHttpRequest(AbstractHttpClient client, HttpContext context, HttpUriRequest request, ResponseHandlerInterface responseHandler) {
-        this.client = client;
-        this.context = context;
-        this.request = request;
-        this.responseHandler = responseHandler;
+        this.client = Utils.notNull(client, "client");
+        this.context = Utils.notNull(context, "context");
+        this.request = Utils.notNull(request, "request");
+        this.responseHandler = Utils.notNull(responseHandler, "responseHandler");
     }
 
     /**
      * This method is called once by the system when the request is about to be
      * processed by the system. The library makes sure that a single request
      * is pre-processed only once.
-     *
+     * <p>&nbsp;</p>
      * Please note: pre-processing does NOT run on the main thread, and thus
      * any UI activities that you must perform should be properly dispatched to
      * the app's UI thread.
@@ -70,7 +69,7 @@ public class AsyncHttpRequest implements Runnable {
      * This method is called once by the system when the request has been fully
      * sent, handled and finished. The library makes sure that a single request
      * is post-processed only once.
-     *
+     * <p>&nbsp;</p>
      * Please note: post-processing does NOT run on the main thread, and thus
      * any UI activities that you must perform should be properly dispatched to
      * the app's UI thread.
@@ -97,9 +96,7 @@ public class AsyncHttpRequest implements Runnable {
             return;
         }
 
-        if (responseHandler != null) {
-            responseHandler.sendStartMessage();
-        }
+        responseHandler.sendStartMessage();
 
         if (isCancelled()) {
             return;
@@ -108,10 +105,10 @@ public class AsyncHttpRequest implements Runnable {
         try {
             makeRequestWithRetries();
         } catch (IOException e) {
-            if (!isCancelled() && responseHandler != null) {
+            if (!isCancelled()) {
                 responseHandler.sendFailureMessage(0, null, null, e);
             } else {
-                Log.e("AsyncHttpRequest", "makeRequestWithRetries returned error, but handler is null", e);
+                AsyncHttpClient.log.e("AsyncHttpRequest", "makeRequestWithRetries returned error", e);
             }
         }
 
@@ -119,9 +116,7 @@ public class AsyncHttpRequest implements Runnable {
             return;
         }
 
-        if (responseHandler != null) {
-            responseHandler.sendFinishMessage();
-        }
+        responseHandler.sendFinishMessage();
 
         if (isCancelled()) {
             return;
@@ -150,7 +145,7 @@ public class AsyncHttpRequest implements Runnable {
 
         HttpResponse response = client.execute(request, context);
 
-        if (isCancelled() || responseHandler == null) {
+        if (isCancelled()) {
             return;
         }
 
@@ -186,11 +181,11 @@ public class AsyncHttpRequest implements Runnable {
                     // while the WI-FI is initialising. The retry logic will be invoked here, if this is NOT the first retry
                     // (to assist in genuine cases of unknown host) which seems better than outright failure
                     cause = new IOException("UnknownHostException exception: " + e.getMessage());
-                    retry = (executionCount > 0) && retryHandler.retryRequest(cause, ++executionCount, context);
+                    retry = (executionCount > 0) && retryHandler.retryRequest(e, ++executionCount, context);
                 } catch (NullPointerException e) {
                     // there's a bug in HttpClient 4.0.x that on some occasions causes
                     // DefaultRequestExecutor to throw an NPE, see
-                    // http://code.google.com/p/android/issues/detail?id=5255
+                    // https://code.google.com/p/android/issues/detail?id=5255
                     cause = new IOException("NPE in HttpClient: " + e.getMessage());
                     retry = retryHandler.retryRequest(cause, ++executionCount, context);
                 } catch (IOException e) {
@@ -201,13 +196,13 @@ public class AsyncHttpRequest implements Runnable {
                     cause = e;
                     retry = retryHandler.retryRequest(cause, ++executionCount, context);
                 }
-                if (retry && (responseHandler != null)) {
+                if (retry) {
                     responseHandler.sendRetryMessage(executionCount);
                 }
             }
         } catch (Exception e) {
             // catch anything else to ensure failure message is propagated
-            Log.e("AsyncHttpRequest", "Unhandled exception origin cause", e);
+            AsyncHttpClient.log.e("AsyncHttpRequest", "Unhandled exception origin cause", e);
             cause = new IOException("Unhandled exception: " + e.getMessage());
         }
 
@@ -216,17 +211,17 @@ public class AsyncHttpRequest implements Runnable {
     }
 
     public boolean isCancelled() {
-        if (isCancelled) {
+        boolean cancelled = isCancelled.get();
+        if (cancelled) {
             sendCancelNotification();
         }
-        return isCancelled;
+        return cancelled;
     }
 
     private synchronized void sendCancelNotification() {
-        if (!isFinished && isCancelled && !cancelIsNotified) {
+        if (!isFinished && isCancelled.get() && !cancelIsNotified) {
             cancelIsNotified = true;
-            if (responseHandler != null)
-                responseHandler.sendCancelMessage();
+            responseHandler.sendCancelMessage();
         }
     }
 
@@ -235,8 +230,28 @@ public class AsyncHttpRequest implements Runnable {
     }
 
     public boolean cancel(boolean mayInterruptIfRunning) {
-        isCancelled = true;
+        isCancelled.set(true);
         request.abort();
         return isCancelled();
+    }
+
+    /**
+     * Will set Object as TAG to this request, wrapped by WeakReference
+     *
+     * @param TAG Object used as TAG to this RequestHandle
+     * @return this AsyncHttpRequest to allow fluid syntax
+     */
+    public AsyncHttpRequest setRequestTag(Object TAG) {
+        this.responseHandler.setTag(TAG);
+        return this;
+    }
+
+    /**
+     * Will return TAG of this AsyncHttpRequest
+     *
+     * @return Object TAG, can be null, if it's been already garbage collected
+     */
+    public Object getTag() {
+        return this.responseHandler.getTag();
     }
 }
